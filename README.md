@@ -16,6 +16,15 @@ This repository contains synthetic data generation tools and exploratory analysi
 - **Analysis:** Jupyter notebooks
 - **Prediction:** Time series models
 - **Stack:** Multi-tool approach (KNIME + Python + SQL)
+
+## Why KNIME?
+
+Used for:
+- **Rapid prototyping** - Test data pipeline logic in hours, not days
+- **Stakeholder demos** - Visual workflows non-technical teams can understand
+- **Validation** - Prove concepts before investing in production code
+
+Production pipelines built in Databricks after validation.
   
 ## Contents
 
