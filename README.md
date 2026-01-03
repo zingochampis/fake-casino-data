@@ -4,6 +4,19 @@
 
 This repository contains synthetic data generation tools and exploratory analysis for an online casino predictive analytics proof of concept.
 
+## Project Structure
+- `data/` - Casino game datasets
+- `knime/` - KNIME workflows for ETL
+- `notebooks/` - Exploratory data analysis
+- `src/` - Python prediction models
+- `sql/` - Data transformation queries
+
+## Tech Highlights
+- **Data Processing:** KNIME, SQL, Python/Pandas
+- **Analysis:** Jupyter notebooks
+- **Prediction:** Time series models
+- **Stack:** Multi-tool approach (KNIME + Python + SQL)
+  
 ## Contents
 
 - **`generator.py`** - Python script for generating realistic synthetic casino transaction data
