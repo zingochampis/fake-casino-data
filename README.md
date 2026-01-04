@@ -63,6 +63,12 @@ Mathematical modeling based on:
 - Deng et al. (2021) - Pareto distributions in online casino gambling
 - Academic research on gambling behavior and RTP mechanics
 
+
+![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![PySpark](https://img.shields.io/badge/pyspark-3.5-orange.svg)
+![Databricks](https://img.shields.io/badge/databricks-MLFlow-red.svg)
+![Knime](https://img.shields.io/badge/knime-local-yellow.svg)
+
 ---
 
 *This is a demonstration project for analytics capabilities. All data is synthetically generated.*
