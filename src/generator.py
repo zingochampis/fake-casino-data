@@ -2,6 +2,8 @@
 Casino Gaming Data Generator for Predictive Analytics POC
 Generates realistic gaming transaction data with Pareto distributions,
 whale behavior, and temporal patterns based on academic research.
+
+FIXED VERSION: Corrected churn logic that was not persisting between weeks.
 """
 
 import pandas as pd
@@ -10,7 +12,7 @@ from datetime import datetime, timedelta
 import random
 import os
 import json
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -36,6 +38,12 @@ class CasinoDataGenerator:
         # Initialize player segments based on research
         self.num_players = 10000
         self.players = self._initialize_players()
+        
+        # FIX: Track churned players with their churn date
+        self.churned_players: Dict[str, datetime] = {}
+        
+        # Track reactivated players (some churned players come back)
+        self.reactivation_rate = 0.05  # 5% of churned players may return
         
     def _initialize_games(self) -> Dict:
         """Initialize 4 games with different characteristics"""
@@ -162,12 +170,17 @@ class CasinoDataGenerator:
                     )
                 
                 # Churn risk based on research (higher for casual players)
+                # These are ANNUAL churn probabilities
                 if segment == 'casual':
-                    churn_probability = np.random.beta(2, 5)  # Higher churn risk
+                    churn_probability = np.random.beta(3, 4)  # ~40-50% annual churn
                 elif segment == 'regular':
-                    churn_probability = np.random.beta(2, 8)
-                else:
-                    churn_probability = np.random.beta(1, 20)  # Low churn for VIPs
+                    churn_probability = np.random.beta(2, 5)  # ~25-30% annual churn
+                elif segment == 'high':
+                    churn_probability = np.random.beta(2, 8)  # ~15-20% annual churn
+                elif segment == 'vip':
+                    churn_probability = np.random.beta(1, 10)  # ~8-10% annual churn
+                else:  # whale
+                    churn_probability = np.random.beta(1, 20)  # ~5% annual churn
                 
                 # Create player profile
                 players.append({
@@ -334,6 +347,40 @@ class CasinoDataGenerator:
         
         return transactions
     
+    def _check_player_churn(self, player: pd.Series, current_week: datetime) -> bool:
+        """
+        FIX: Check if player has churned, using persistent tracking.
+        Returns True if player is churned (should skip), False if active.
+        """
+        player_id = player['player_id']
+        
+        # Already churned?
+        if player_id in self.churned_players:
+            churn_date = self.churned_players[player_id]
+            
+            # Check for reactivation (small chance churned players return)
+            weeks_since_churn = (current_week - churn_date).days / 7
+            if weeks_since_churn >= 4:  # At least 4 weeks before possible return
+                # Reactivation chance decreases over time
+                reactivation_chance = self.reactivation_rate / (1 + weeks_since_churn / 10)
+                if np.random.random() < reactivation_chance:
+                    # Player reactivates!
+                    del self.churned_players[player_id]
+                    return False
+            
+            return True  # Still churned
+        
+        # Check for new churn this week
+        # Convert annual churn probability to weekly
+        weekly_churn_prob = player['churn_probability'] / 52
+        
+        if np.random.random() < weekly_churn_prob:
+            # Player churns this week
+            self.churned_players[player_id] = current_week
+            return True
+        
+        return False  # Player is active
+    
     def generate_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Generate full year of gaming data
@@ -350,6 +397,14 @@ class CasinoDataGenerator:
         total_days = (self.end_date - self.start_date).days + 1
         total_weeks = (total_days + 6) // 7  # Round up to nearest week
         
+        # FIX: Reset churned players tracking
+        self.churned_players = {}
+        
+        # Track churn statistics
+        churn_stats = {'by_segment': {seg: 0 for seg in ['whale', 'vip', 'high', 'regular', 'casual']},
+                       'by_week': [],
+                       'reactivations': 0}
+        
         # Generate week by week
         current_date = self.start_date
         week_num = 0
@@ -359,20 +414,23 @@ class CasinoDataGenerator:
             week_start = current_date
             week_end = min(current_date + timedelta(days=7), self.end_date)
             
-            if week_num % 4 == 0:
-                print(f"Processing week {week_num}/{total_weeks}...")
+            churned_this_week = 0
             
-            # For each active player
-            for _, player in self.players.iterrows():
+            if week_num % 4 == 0:
+                print(f"Processing week {week_num}/{total_weeks}... "
+                      f"(Active: {self.num_players - len(self.churned_players)}, "
+                      f"Churned: {len(self.churned_players)})")
+            
+            # For each player
+            for idx, player in self.players.iterrows():
                 # Skip if player hasn't registered yet
                 if player['registration_date'] > week_end:
                     continue
                 
-                # Simulate churn (player becomes inactive)
-                if player['is_active']:
-                    if np.random.random() < player['churn_probability'] / 52:  # Weekly churn chance
-                        player['is_active'] = False
-                        continue
+                # FIX: Use persistent churn tracking
+                if self._check_player_churn(player, week_start):
+                    churned_this_week += 1
+                    continue
                 
                 # Generate sessions for this week
                 session_times = self._generate_session_times(player, week_start)
@@ -397,10 +455,34 @@ class CasinoDataGenerator:
                     )
                     all_transactions.extend(session_transactions)
             
+            churn_stats['by_week'].append({
+                'week': week_num,
+                'date': week_start.date(),
+                'churned_cumulative': len(self.churned_players),
+                'active_players': self.num_players - len(self.churned_players)
+            })
+            
             # Move to next week (avoid infinite loop at the end)
             if week_end >= self.end_date:
                 break
             current_date = week_end + timedelta(days=1)
+        
+        # Calculate final churn stats by segment
+        for player_id in self.churned_players:
+            segment = self.players[self.players['player_id'] == player_id]['segment'].iloc[0]
+            churn_stats['by_segment'][segment] += 1
+        
+        # Print churn summary
+        print("\n" + "="*50)
+        print("CHURN SUMMARY")
+        print("="*50)
+        print(f"Total players: {self.num_players}")
+        print(f"Total churned: {len(self.churned_players)} ({len(self.churned_players)/self.num_players*100:.1f}%)")
+        print("\nChurn by segment:")
+        for segment, count in churn_stats['by_segment'].items():
+            segment_total = len(self.players[self.players['segment'] == segment])
+            pct = count / segment_total * 100 if segment_total > 0 else 0
+            print(f"  {segment:10s}: {count:4d} / {segment_total:4d} ({pct:.1f}%)")
         
         # Convert to DataFrame
         print(f"\nGenerated {len(all_transactions):,} transactions")
@@ -423,6 +505,15 @@ class CasinoDataGenerator:
         # Create player summary
         print("Creating player summaries...")
         player_summary = self._create_player_summary(transactions_df)
+        
+        # Add churn info to player summary
+        player_summary['is_churned'] = player_summary['player_id'].isin(self.churned_players.keys())
+        player_summary['churn_date'] = player_summary['player_id'].map(
+            lambda x: self.churned_players.get(x, pd.NaT)
+        )
+        
+        # Save churn stats
+        self.churn_stats = churn_stats
         
         return transactions_df, daily_summary, player_summary
     
@@ -492,7 +583,7 @@ class CasinoDataGenerator:
         
         # Add player segment from original data
         player_summary = player_summary.reset_index().merge(
-            self.players[['player_id', 'segment', 'preferred_game']],
+            self.players[['player_id', 'segment', 'preferred_game', 'churn_probability']],
             on='player_id',
             how='left'
         )
@@ -522,6 +613,10 @@ class CasinoDataGenerator:
         player_summary.to_csv(os.path.join(self.output_dir, 'player_summary.csv'), index=False)
         pd.DataFrame.from_dict(self.games, orient='index').to_csv(os.path.join(self.output_dir, 'games_metadata.csv'))
 
+        # Save churn statistics
+        churn_weekly_df = pd.DataFrame(self.churn_stats['by_week'])
+        churn_weekly_df.to_csv(os.path.join(self.output_dir, 'churn_weekly.csv'), index=False)
+        
         # Handle the massive transactions table
         if not transactions_df.empty:
             # Create a simple string column for month to avoid Period object memory overhead
@@ -546,6 +641,9 @@ class CasinoDataGenerator:
             'total_transactions': len(transactions_df),
             'total_wagered': float(transactions_df['bet_amount'].sum()),
             'gross_gaming_revenue': float(-transactions_df['net_result'].sum()),
+            'total_churned': len(self.churned_players),
+            'churn_rate': len(self.churned_players) / len(self.players),
+            'churn_by_segment': self.churn_stats['by_segment']
         }
         with open(os.path.join(self.output_dir, 'generation_stats.json'), 'w') as f:
             json.dump(stats, f, indent=2, default=str)
@@ -554,10 +652,12 @@ class CasinoDataGenerator:
 
         return stats
 
+
 # Main execution
 if __name__ == "__main__":
     print("="*60)
     print("Casino Gaming Data Generator for Predictive Analytics POC")
+    print("FIXED VERSION - With Working Churn Logic")
     print("="*60)
     
     # Initialize generator
@@ -572,14 +672,13 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("Data generation completed successfully!")
     print("="*60)
+    print("\nKey fixes in this version:")
+    print("1. Churn now persists across weeks (using dictionary tracking)")
+    print("2. Added reactivation logic (some churned players return)")
+    print("3. Churn rates calibrated by segment (casuals ~40%, whales ~5%)")
+    print("4. Added churn_date to player_summary for survival analysis")
+    print("5. Added churn_weekly.csv for retention curve analysis")
     print("\nNext steps:")
-    print("1. Open KNIME Analytics Platform")
-    print("2. Import the CSV files from the POC folder")
-    print("3. Build time series prediction models")
-    print("4. Create visualizations and reports")
-    print("\nKey files generated:")
-    print("  - transactions_*.csv: Raw betting data")
-    print("  - daily_summary.csv: Daily aggregated metrics")
-    print("  - player_summary.csv: Player lifetime values")
-    print("  - games_metadata.csv: Game characteristics")
-    print("  - generation_stats.json: Generation statistics")
+    print("1. Re-run your cohort retention analysis")
+    print("2. You should now see realistic decay curves")
+    print("3. Cluster-based retention differences will be meaningful")
